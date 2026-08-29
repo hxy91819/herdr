@@ -1,0 +1,78 @@
+id = "codebuddy"
+version = "2026.08.28.1"
+min_engine_version = 2
+updated_at = "2026-08-28T00:00:00Z"
+aliases = ["codebuddy-code", "codebuddy code", "cbc"]
+
+# CodeBuddy Code is a Claude Code fork, so the chrome is familiar but not
+# identical: the composer marker is `>` instead of `❯`, status lines use the
+# U+2736..U+273A spinner family, and the terminal title keeps its braille
+# spinner even while a permission dialog is open. Blocker rules therefore
+# outrank osc_title_working instead of sitting below it.
+
+[[rules]]
+id = "trust_folder_dialog"
+state = "blocked"
+priority = 1250
+region = "bottom_non_empty_lines(20)"
+visible_blocker = true
+contains = ["enter to confirm"]
+any = [
+  { contains = ["trust folder only ("] },
+  { contains = ["trust folder and all subdirectories ("] },
+]
+
+[[rules]]
+id = "permission_prompt"
+state = "blocked"
+priority = 1240
+region = "after_last_horizontal_rule"
+visible_blocker = true
+regex = ['(?i)do you want to [^\n?]{1,80}\?']
+all = [
+  # Numbered confirmation is the invariant; the labels after "Yes," differ
+  # between the bash and file dialogs.
+  { any = [
+    { line_regex = ['(?i)^\s*>\s*\d+\.\s*yes\b'] },
+    { line_regex = ['(?i)^\s*>\s*\d+\.\s*no\b'] },
+    { line_regex = ['(?i)^\s*\d+\.\s*yes, and don'] },
+    { line_regex = ['(?i)^\s*\d+\.\s*no, and tell codebuddy'] },
+  ] },
+]
+
+[[rules]]
+id = "osc_title_working"
+state = "working"
+priority = 1100
+region = "osc_title"
+visible_working = true
+regex = ['^[\x{2800}-\x{28FF}] ']
+
+[[rules]]
+id = "live_turn_working"
+state = "working"
+priority = 1050
+region = "bottom_non_empty_lines(16)"
+visible_working = true
+line_regex = ['^[\x{2736}-\x{273B}][ \t]+\S[^\n]*esc to interrupt']
+
+[[rules]]
+id = "osc_title_idle"
+state = "idle"
+priority = 250
+region = "osc_title"
+visible_idle = true
+regex = ['^\x{2733} ']
+
+[[rules]]
+# The composer stays visible while a turn runs, so this only wins when no
+# working rule matched.
+id = "composer_idle"
+state = "idle"
+priority = 100
+region = "prompt_box_body"
+visible_idle = true
+line_regex = ['^\s*>(?:[ \t][^\n]*)?$']
+not = [
+  { line_regex = ['(?i)^\s*>\s*\d+\.'] },
+]

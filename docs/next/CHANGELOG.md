@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- Added CodeBuddy Code detection for idle, working, and blocked states, including bash and file permission prompts and the first-run folder trust dialog.
 - Custom themes can now define separate light and dark color overrides when automatic theme switching is enabled. (#837, thanks @aneym)
 
 ### Fixed

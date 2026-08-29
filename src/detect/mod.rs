@@ -43,6 +43,7 @@ pub struct AgentDetection {
 pub enum Agent {
     Pi,
     Claude,
+    Codebuddy,
     Codex,
     Gemini,
     Cursor,
@@ -70,6 +71,7 @@ impl Agent {
     pub const ALL: [Self; 23] = [
         Self::Pi,
         Self::Claude,
+        Self::Codebuddy,
         Self::Codex,
         Self::Gemini,
         Self::Cursor,
@@ -96,6 +98,7 @@ impl Agent {
     pub const SCREEN_MANIFEST_AGENTS: [Self; 21] = [
         Self::Pi,
         Self::Claude,
+        Self::Codebuddy,
         Self::Codex,
         Self::Gemini,
         Self::Cursor,
@@ -122,6 +125,7 @@ pub fn agent_label(agent: Agent) -> &'static str {
     match agent {
         Agent::Pi => "pi",
         Agent::Claude => "claude",
+        Agent::Codebuddy => "codebuddy",
         Agent::Codex => "codex",
         Agent::Gemini => "gemini",
         Agent::Cursor => "cursor",
@@ -150,6 +154,7 @@ pub fn interactive_agent_executable(agent: Agent) -> &'static str {
     match agent {
         Agent::Pi => "pi",
         Agent::Claude => "claude",
+        Agent::Codebuddy => "codebuddy",
         Agent::Codex => "codex",
         Agent::Gemini => "gemini",
         Agent::Cursor => {
@@ -195,6 +200,9 @@ fn lookup_agent(name: &str) -> Option<Agent> {
     match name {
         "pi" => Some(Agent::Pi),
         "claude" | "claude-code" => Some(Agent::Claude),
+        // The `codebuddy` bin is a node script, so panes are usually identified
+        // through the script path in node's argv rather than the process name.
+        "codebuddy" | "codebuddy-code" | "codebuddy code" | "cbc" => Some(Agent::Codebuddy),
         "codex" => Some(Agent::Codex),
         "gemini" => Some(Agent::Gemini),
         "cursor" | "cursor-agent" => Some(Agent::Cursor),
@@ -372,13 +380,17 @@ fn normalized_process_name(process: &crate::platform::ForegroundProcess) -> Stri
         return effective.to_string();
     }
 
+    // Linux reports node's thread name instead of a usable argv0, so the
+    // generic-runtime branch above cannot fire there. Unwrap node/bun script
+    // arguments here for any recognized agent, matching what macOS and Windows
+    // already get through argv0.
     if let Some(runtime) = process.argv.as_deref().and_then(|argv| argv.first()) {
         let runtime_name = normalized_agent_lookup_name(path_basename(runtime));
         if matches!(runtime_name.as_str(), "node" | "bun") {
             if let Some(wrapped_agent) =
                 wrapped_agent_name_from_runtime_argv(runtime, process.argv.as_deref())
             {
-                if identify_agent(&wrapped_agent) == Some(Agent::Qwen) {
+                if identify_agent(&wrapped_agent).is_some() {
                     return wrapped_agent;
                 }
             }
@@ -771,6 +783,9 @@ mod tests {
         assert_eq!(identify_agent("pi"), Some(Agent::Pi));
         assert_eq!(identify_agent("claude"), Some(Agent::Claude));
         assert_eq!(identify_agent("claude-code"), Some(Agent::Claude));
+        assert_eq!(identify_agent("codebuddy"), Some(Agent::Codebuddy));
+        assert_eq!(identify_agent("codebuddy-code"), Some(Agent::Codebuddy));
+        assert_eq!(identify_agent("cbc"), Some(Agent::Codebuddy));
         assert_eq!(identify_agent("codex"), Some(Agent::Codex));
         assert_eq!(identify_agent("gemini"), Some(Agent::Gemini));
         assert_eq!(identify_agent("cursor"), Some(Agent::Cursor));
@@ -821,6 +836,7 @@ mod tests {
     fn parse_known_agent_labels() {
         assert_eq!(parse_agent_label("pi"), Some(Agent::Pi));
         assert_eq!(parse_agent_label("claude"), Some(Agent::Claude));
+        assert_eq!(parse_agent_label("codebuddy-code"), Some(Agent::Codebuddy));
         assert_eq!(parse_agent_label("cursor-agent"), Some(Agent::Cursor));
         assert_eq!(parse_agent_label("devin-cli"), Some(Agent::Devin));
         assert_eq!(parse_agent_label("agy"), Some(Agent::Antigravity));
@@ -858,6 +874,7 @@ mod tests {
         let expected = [
             (Agent::Pi, "pi"),
             (Agent::Claude, "claude"),
+            (Agent::Codebuddy, "codebuddy"),
             (Agent::Codex, "codex"),
             (Agent::Gemini, "gemini"),
             (
@@ -981,6 +998,25 @@ mod tests {
                 Some((Agent::Qwen, "qwen".to_string()))
             );
         }
+    }
+
+    #[test]
+    fn identify_agent_in_job_detects_node_wrapped_codebuddy() {
+        // Linux reports node's thread name, so the script path in argv is the
+        // only signal that CodeBuddy's bin is a node script.
+        let job = crate::platform::ForegroundJob {
+            process_group_id: 123,
+            processes: vec![foreground_process(
+                123,
+                "MainThread",
+                &["node", "/root/.nvm/versions/node/v24.15.0/bin/codebuddy"],
+            )],
+        };
+
+        assert_eq!(
+            identify_agent_in_job(&job),
+            Some((Agent::Codebuddy, "codebuddy".to_string()))
+        );
     }
 
     #[test]
