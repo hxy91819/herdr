@@ -1042,3 +1042,97 @@ fn codex_osc_working_beats_weak_blocker_screen() {
         Some("osc_title_working")
     );
 }
+
+// --- CodeBuddy Code rules ---
+
+const CODEBUDDY_COMPOSER: &str = "──────────────────────────────────────\n\
+    >\n\
+    ──────────────────────────────────────\n\
+    ? for shortcuts  ← for agents\n";
+
+#[test]
+fn codebuddy_osc_title_braille_spinner_is_working() {
+    let result = osc_explain(Agent::Codebuddy, "", "⠹ Run uname system info", "");
+    assert_eq!(result.state, AgentState::Working);
+    assert_eq!(
+        result.matched_rule.as_ref().map(|r| r.id.as_str()),
+        Some("osc_title_working")
+    );
+    assert!(result.visible_working);
+}
+
+#[test]
+fn codebuddy_osc_title_static_prefix_is_idle() {
+    let result = osc_explain(Agent::Codebuddy, "", "✳ Run uname system info", "");
+    assert_eq!(result.state, AgentState::Idle);
+    assert_eq!(
+        result.matched_rule.as_ref().map(|r| r.id.as_str()),
+        Some("osc_title_idle")
+    );
+    assert!(result.visible_idle);
+}
+
+#[test]
+fn codebuddy_live_turn_screen_is_working_without_osc() {
+    let screen = "● Bash(pwd)\n\
+        ✶ Waking… (1s · streaming · ↓ 39 tokens · esc to interrupt)\n\
+        ──────────────────────────────────────\n\
+        >\n\
+        ──────────────────────────────────────\n\
+        ? for shortcuts  ← for agents\n";
+    let result = osc_explain(Agent::Codebuddy, screen, "", "");
+    assert_eq!(result.state, AgentState::Working);
+    assert_eq!(
+        result.matched_rule.as_ref().map(|r| r.id.as_str()),
+        Some("live_turn_working")
+    );
+    assert!(result.visible_working);
+}
+
+#[test]
+fn codebuddy_composer_is_idle_when_no_turn_is_running() {
+    let result = osc_explain(Agent::Codebuddy, CODEBUDDY_COMPOSER, "", "");
+    assert_eq!(result.state, AgentState::Idle);
+    assert_eq!(
+        result.matched_rule.as_ref().map(|r| r.id.as_str()),
+        Some("composer_idle")
+    );
+    assert!(result.visible_idle);
+}
+
+#[test]
+fn codebuddy_permission_prompt_outranks_working_osc_title() {
+    // CodeBuddy keeps the braille spinner in the terminal title while a
+    // permission dialog is open, so the blocked rule outranks osc_title_working.
+    let screen = "● Bash(pwd)\n\
+        ──────────────────────────────────────\n\
+         Bash command\n\n   pwd\n   Print working directory\n\n\
+        ──────────────────────────────────────\n\n\
+         Do you want to proceed?\n\n\
+         > 1. Yes\n\
+           2. Yes, and don't ask again for session (shift + tab)\n\
+           3. No, and tell CodeBuddy what to do differently (escape)\n";
+    let result = osc_explain(Agent::Codebuddy, screen, "⠇ Run uname system info", "");
+    assert_eq!(result.state, AgentState::Blocked);
+    assert_eq!(
+        result.matched_rule.as_ref().map(|r| r.id.as_str()),
+        Some("permission_prompt")
+    );
+    assert!(result.visible_blocker);
+}
+
+#[test]
+fn codebuddy_trust_folder_dialog_is_blocked() {
+    let screen =
+        "│ CodeBuddy Code may read, write, or execute files contained in this directory.\n\
+        │   > 1. Trust folder only (cb-trust-test)\n\
+        │     4. No, exit (escape)\n\
+        │ Enter to confirm • Esc to exit\n";
+    let result = osc_explain(Agent::Codebuddy, screen, "", "");
+    assert_eq!(result.state, AgentState::Blocked);
+    assert_eq!(
+        result.matched_rule.as_ref().map(|r| r.id.as_str()),
+        Some("trust_folder_dialog")
+    );
+    assert!(result.visible_blocker);
+}
