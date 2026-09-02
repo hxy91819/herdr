@@ -2,6 +2,11 @@
 
 Terminal based agent runtime for coding agents.
 
+> **这是一个个人 fork，不是上游仓库。** 分支模型、同步流程和推送限制见
+> [`FORK.md`](FORK.md)，改动本仓库前先读它。其中最关键的一条：**不要向 fork 推送
+> 名为 `master` 或 `windows` 的分支，也不要同步上游 tag**，否则会触发上游的 CI、
+> 网站部署和发布工作流。
+
 ## Scope and Audience
 
 These instructions are layered.

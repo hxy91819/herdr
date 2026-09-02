@@ -1,0 +1,137 @@
+# Fork maintenance: mirror upstream master into `upstream-sync`, then merge it
+# into `dist/main`. See FORK.md for the branch model.
+#
+# This workflow only runs from the repository default branch, which must be set
+# to `dist/main`. Pushing `master` or `windows` would trigger the upstream
+# ci/website workflows, so those branch names are never used here.
+name: sync upstream
+
+on:
+  schedule:
+    # Daily at 00:00 Beijing time (16:00 UTC).
+    - cron: "0 16 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dist/main
+          fetch-depth: 0
+          # Default GITHUB_TOKEN can push to this repository.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: configure identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Reuse recorded conflict resolutions across runs.
+          git config rerere.enabled true
+
+      - name: fetch upstream and fork branches
+        run: |
+          # Local clones name the upstream `origin` and the fork `fork`. Inside
+          # Actions the checkout remote is already the fork, so it stays
+          # `origin` and upstream is added under its own name.
+          git remote add upstream https://github.com/herdrdev/herdr.git
+          # `--no-tags` matters: upstream release.yml is triggered by `v*` tags,
+          # and mirroring them here would attempt a release on the fork.
+          git fetch --no-tags upstream master
+          git fetch --no-tags origin upstream-sync dist/main
+
+      - name: fast-forward upstream-sync
+        id: mirror
+        run: |
+          set -euo pipefail
+          git checkout -B upstream-sync origin/upstream-sync
+
+          if git merge-base --is-ancestor upstream/master upstream-sync; then
+            echo "up_to_date=true" >> "$GITHUB_OUTPUT"
+            echo "upstream-sync already contains $(git rev-parse --short upstream/master)"
+            exit 0
+          fi
+
+          if ! git merge-base --is-ancestor upstream-sync upstream/master; then
+            echo "::error::upstream-sync diverged from upstream/master; it must only fast-forward"
+            exit 1
+          fi
+
+          echo "up_to_date=false" >> "$GITHUB_OUTPUT"
+          git merge --ff-only upstream/master
+          git push origin upstream-sync
+
+      - name: merge into dist/main
+        id: integrate
+        if: steps.mirror.outputs.up_to_date == 'false'
+        run: |
+          set -euo pipefail
+          git checkout dist/main
+          if ! git merge -m "merge: sync upstream into dist/main" upstream-sync; then
+            # Capture the conflicted paths before aborting; --abort clears the index.
+            conflicts="$(git diff --name-only --diff-filter=U)"
+            git merge --abort
+            {
+              echo "conflicted=true"
+              echo 'files<<CONFLICT_EOF'
+              echo "$conflicts"
+              echo 'CONFLICT_EOF'
+            } >> "$GITHUB_OUTPUT"
+            echo "::error::upstream merge into dist/main conflicts; opening an issue"
+            exit 1
+          fi
+          echo "conflicted=false" >> "$GITHUB_OUTPUT"
+          git push origin dist/main
+
+      - name: report conflict
+        if: failure() && steps.integrate.outputs.conflicted == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CONFLICT_FILES: ${{ steps.integrate.outputs.files }}
+        run: |
+          set -euo pipefail
+          gh label create upstream-sync-conflict \
+            --description "Upstream sync could not merge into dist/main" \
+            --force >/dev/null
+
+          # One open issue per conflict; do not spam on every scheduled run.
+          open_count="$(gh issue list --label upstream-sync-conflict --state open --json number --jq 'length')"
+          if [ "$open_count" -gt 0 ]; then
+            echo "a conflict issue is already open"
+            exit 0
+          fi
+
+          {
+            echo "Upstream \`$(git rev-parse upstream/master)\` could not be merged into \`dist/main\`."
+            echo
+            echo "\`upstream-sync\` was updated, so the mirror is accurate. Only the"
+            echo "integration into \`dist/main\` is pending."
+            echo
+            echo "Conflicting files:"
+            echo
+            echo '```'
+            echo "$CONFLICT_FILES"
+            echo '```'
+            echo
+            echo "Resolve it locally, following FORK.md:"
+            echo
+            echo '```bash'
+            echo "git fetch origin"
+            echo "git checkout dist/main && git merge upstream-sync"
+            echo "# resolve, then: git push fork dist/main"
+            echo '```'
+          } > /tmp/conflict-body.md
+
+          gh issue create \
+            --title "upstream sync: merge conflict into dist/main" \
+            --label upstream-sync-conflict \
+            --body-file /tmp/conflict-body.md
