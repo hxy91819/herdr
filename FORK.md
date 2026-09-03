@@ -66,15 +66,69 @@ git push fork dist/main
 `upstream-sync`、`dist/main` 的推送已由 `.github/workflows/upstream-sync.yml` 每日自动
 完成，上述命令主要在需要人工解冲突或本地开发时使用。
 
-## 新增特性
+## 新增功能：先选层，再动手
+
+Herdr 有三层扩展手段。**改源码是最后一层**——它是唯一需要跟着上游永久维护的选择。
+
+### 第一层：本地 manifest override（零改动）
+
+调整**已内置** agent 的检测规则，把清单放到平台配置目录即可：
+
+```text
+~/.config/herdr/agent-detection/<agent>.toml
+```
+
+本地覆盖优先级最高，支持热加载（`herdr server reload-agent-manifests`），不碰源码、
+也不碰本 fork。规则调参、临时绕过误判，一律先走这一层。
+
+> **边界**：覆盖是按 `Agent` 枚举查找的（`src/detect/manifest.rs` 的 `override_path`，
+> 文件名取 `agent_label(agent)`），所以**只能覆盖已经存在的 agent，不能凭空新增一种**。
+
+### 第二层：插件（零改动，可分享）
+
+插件是一个带 `herdr-plugin.toml` 的目录，命令可以是 Bash、Node、Python、PowerShell、
+Rust 二进制等任意 argv 程序。整个 Herdr CLI 就是插件 API，插件内用 `HERDR_BIN_PATH`
+回调 Herdr，避免自己处理 Unix socket / Windows named pipe 的差异。
 
 ```bash
-git checkout upstream-sync
-git checkout -b my-feature
-# ... 提交 ...
-git push -u fork my-feature
-git checkout dist/main && git merge my-feature
+herdr plugin link /path/to/plugin        # 本地开发用 link
+herdr plugin install owner/repo/subdir   # 安装他人发布的
 ```
+
+插件 v1 能做的声明式能力：`actions`、`events` 钩子、`startup` 钩子、`panes`、
+`link_handlers`，以及把按键绑到 action 上。工作流、自动化、外部集成、自定义面板、
+Git/工单系统联动，都**先考虑做成插件**。
+
+> **边界**：插件 v1 **不能**在运行时注册 action、**不能**注册新的 agent 检测清单、
+> **不能**提供原生非终端 UI。需要这些能力才到第三层。
+
+参考实现：`ogulcancelik/herdr-plugin-examples`（官方不维护，当作抄的范例）。
+
+### 第三层：改源码（本 fork 的活）
+
+只有前两层都做不到时才改源码。典型例子：**新增一种 agent**——必须动 `Agent` 枚举、
+`agent_label`、两处清单、三语文档，插件和 override 都做不到。走下节的完整流程。
+
+## 改源码的完整流程
+
+1. **切分支**：从 `upstream-sync` 切出，一个 feature 一条分支，名字用 kebab-case。
+
+   ```bash
+   git fetch origin
+   git checkout upstream-sync && git checkout -b my-feature
+   ```
+
+2. **改代码**：遵守上游 `AGENTS.md` 的通用约定（Rust 生产代码不用 `unwrap()`、平台相关
+   代码放 `src/platform/<os>.rs`、渲染保持纯函数、不引入没必要的依赖）。提交用小写
+   conventional commit。
+
+3. **验证**：见"验证"一节。
+
+4. **跟进上游**：`git rebase upstream-sync`，冲突按提交逐个解决，然后
+   `git push --force-with-lease fork my-feature`。
+
+5. **合入集成分支**：`git checkout dist/main && git merge my-feature && git push fork dist/main`。
+   这一步**保持手动**，不自动化——把什么合进可用构建应该是个主动决定。
 
 ## 冲突处理
 
@@ -88,6 +142,61 @@ git checkout dist/main && git merge my-feature
 - 上游把 agent 清单拆成了两处，需要**同时**更新：
   - `src/detect/manifests/` — 通过 `include_str!` 编译进二进制
   - `distribution/agent-detection/` — 运行时热更新用，并在 `index.toml` 登记
+
+## 验证
+
+上游要求提交前跑 `just check`（格式检查 + `cargo nextest` + 维护脚本测试）。只改了清单
+和文档、没动 Rust 时，上游自带的校验脚本更快也够用。
+
+```bash
+# 完整验证（需要 zig / just / cargo-nextest）
+just check
+
+# 只做类型检查和测试
+cargo check --all-targets
+cargo nextest run
+
+# 只改了 agent 清单和文档时的快速校验
+python3 scripts/agent_detection_manifest_check.py   # 两处清单与 index 的一致性
+python3 scripts/config_reference_check.py           # 配置参考文档同步
+python3 scripts/docs_translation_parity.py          # en / ja / zh-cn 文档对齐
+PYTHONPATH=. python3 -m scripts.test_changelog       # changelog 格式
+```
+
+`docs_translation_parity.py` 特别值得跑：本 fork 的补丁同时改了英文、日文、简体中文
+三份文档，漏改一种语言就会在这里暴露。
+
+### 环境准备
+
+`build.rs` 调用 Zig 编译 vendored `libghostty-vt`，当前要求 **Zig 0.15.2**。缺少时
+`cargo check` 会以 `zig executable not found` 失败，可用 `ZIG` 环境变量指向二进制。
+
+```bash
+# Linux x86_64
+curl -fsSL https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz \
+  | tar -xJ -C /opt
+export PATH="/opt/zig-x86_64-linux-0.15.2:$PATH"
+zig version
+```
+
+本机（当前开发环境）Zig 0.15.2 已装在 `/opt/zig/zig-x86_64-linux-0.15.2/zig`，并已
+软链到 `/usr/local/bin/zig`，无需再装。
+
+**已知坑**：如果 zig 构建报
+`failed to spawn and capture stdio from .../uucode_build_tables: FileNotFound`，
+且目标文件实际存在，原因是本机 `/root/.cache -> /data/cache-migrated/.cache` 是
+符号链接：zig 按**逻辑路径**（5 层）计算子进程可执行文件的相对路径，内核却按**物理
+路径**（6 层）解析 `..`，差一层导致 ENOENT。修法是把 zig 全局缓存指到无符号链接的
+物理路径：
+
+```bash
+export ZIG_GLOBAL_CACHE_DIR=/data/zig-global-cache   # 物理路径，勿放 ~/.cache 下
+```
+
+`cargo check` 会继承该环境变量传给 `zig build`，直接带上它运行即可。本机已写入
+`~/.cargo/config.toml` 的 `[env]`，所以直接跑 `cargo check` 也会带上该变量。
+
+`just` 和 `cargo-nextest` 不在默认工具链里，按需安装。
 
 ## 自动化
 
